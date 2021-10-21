@@ -1,94 +1,84 @@
-from socket import AF_INET, socket, SOCK_STREAM
-from threading import Thread
-import tkinter
-import tkinter.simpledialog
+import socket
+import select
+import errno
+import sys
 
 
-def receive():
-    """Handles receiving of messages."""
-    while True:
-        try:
-            msg = client_socket.recv(BUFSIZ).decode("utf8")
-            msg_list.insert(tkinter.END, msg)
-        except OSError:  # Possibly client has left the chat.
-            break
+HEADER_LENGTH = 10
 
+IP = "127.0.0.1"
+PORT = 1234
+my_username = input("Username: ")
 
-def send(event=None):  # event is passed by binders.
-    """Handles sending of messages."""
-    msg = my_msg.get()
-    my_msg.set("")  # Clears input field.
-    client_socket.send(bytes(msg, "utf8"))
-    if msg == "{quit}":
-        client_socket.close()
-        top.quit()
+# Create a socket
+# socket.AF_INET - address family, IPv4, some otehr possible are AF_INET6, AF_BLUETOOTH, AF_UNIX
+# socket.SOCK_STREAM - TCP, conection-based, socket.SOCK_DGRAM - UDP, connectionless, datagrams, socket.SOCK_RAW - raw IP packets
+client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
+# Connect to a given ip and port
+client_socket.connect((IP, PORT))
 
-def on_closing(event=None):
-    """This function is to be called when the window is closed."""
-    my_msg.set("{quit}")
-    send()
+# Set connection to non-blocking state, so .recv() call won;t block, just return some exception we'll handle
+client_socket.setblocking(False)
 
+# Prepare username and header and send them
+# We need to encode username to bytes, then count number of bytes and prepare header of fixed size, that we encode to bytes as well
+username = my_username.encode("utf-8")
+username_header = f"{len(username):<{HEADER_LENGTH}}".encode("utf-8")
+client_socket.send(username_header + username)
 
-top = tkinter.Tk()
-top.title("Real Time Messaging Application!!!")
+while True:
 
-messages_frame = tkinter.Frame(top)
-my_msg = tkinter.StringVar()  # For the messages to be sent.
-my_msg.set("Type your messages here.")
-scrollbar = tkinter.Scrollbar(messages_frame)  # To navigate through past messages.
+    # Wait for user to input a message
+    message = input(f"{my_username} > ")
 
-# Following will contain the messages.
-msg_list = tkinter.Listbox(messages_frame, height=15, width=70, yscrollcommand=scrollbar.set)
-scrollbar.pack(side=tkinter.RIGHT, fill=tkinter.Y)
-msg_list.pack(side=tkinter.LEFT, fill=tkinter.BOTH)
-msg_list.pack()
-messages_frame.pack()
+    # If message is not empty - send it
+    if message:
 
-entry_field = tkinter.Entry(top, width=50, textvariable=my_msg)
-entry_field.bind("<Return>", send)
-entry_field.pack()
-send_button = tkinter.Button(top, text="Send", command=send)
-send_button.pack()
+        # Encode message to bytes, prepare header and convert to bytes, like for username above, then send
+        message = message.encode("utf-8")
+        message_header = f"{len(message):<{HEADER_LENGTH}}".encode("utf-8")
+        client_socket.send(message_header + message)
 
-top.protocol("WM_DELETE_WINDOW", on_closing)
+    try:
+        # Now we want to loop over received messages (there might be more than one) and print them
+        while True:
 
+            # Receive our "header" containing username length, it's size is defined and constant
+            username_header = client_socket.recv(HEADER_LENGTH)
 
-# Sockets part
-class MyDialog(tkinter.simpledialog.Dialog):
+            # If we received no data, server gracefully closed a connection, for example using socket.close() or socket.shutdown(socket.SHUT_RDWR)
+            if not len(username_header):
+                print("Connection closed by the server")
+                sys.exit()
 
-    def body(self, master):
-        tkinter.Label(master, text="Enter HOST Address:").grid(row=0)
-        tkinter.Label(master, text="Enter PORT Address:").grid(row=1)
+            # Convert header to int value
+            username_length = int(username_header.decode("utf-8").strip())
 
-        self.e1 = tkinter.Entry(master)
-        self.e2 = tkinter.Entry(master)
+            # Receive and decode username
+            username = client_socket.recv(username_length).decode("utf-8")
 
-        self.e1.grid(row=0, column=1)
-        self.e2.grid(row=1, column=1)
-        self.e1 # initial focus
+            # Now do the same for message (as we received username, we received whole message, there's no need to check if it has any length)
+            message_header = client_socket.recv(HEADER_LENGTH)
+            message_length = int(message_header.decode("utf-8").strip())
+            message = client_socket.recv(message_length).decode("utf-8")
 
-        self.apply()
+            # Print message
+            print(f"{username} > {message}")
 
-    def apply(self):
-        self.HOST = self.e1.get()
-        self.PORT = self.e2.get()
-        return [self.HOST, self.PORT]
+    except IOError as e:
+        # This is normal on non blocking connections - when there are no incoming data error is going to be raised
+        # Some operating systems will indicate that using AGAIN, and some using WOULDBLOCK error code
+        # We are going to check for both - if one of them - that's expected, means no incoming data, continue as normal
+        # If we got different error code - something happened
+        if e.errno != errno.EAGAIN and e.errno != errno.EWOULDBLOCK:
+            print("Reading error: {}".format(str(e)))
+            sys.exit()
 
-HP_val = MyDialog(top)
-# print(f"***************{HP_val.HOST}***************")
-# print(f"***************{HP_val.PORT}***************")
+        # We just did not receive anything
+        continue
 
-if not HP_val.PORT:
-    HP_val.PORT = 1234
-else:
-    HP_val.PORT = int(HP_val.PORT)
-
-BUFSIZ = 1024
-ADDR = (HP_val.HOST, HP_val.PORT)
-
-client_socket = socket(AF_INET, SOCK_STREAM)
-client_socket.connect(ADDR)
-receive_thread = Thread(target=receive)
-receive_thread.start()
-top.mainloop()  # Starts GUI execution.
+    except Exception as e:
+        # Any other exception - something happened, exit
+        print("Reading error: ".format(str(e)))
+        sys.exit()
