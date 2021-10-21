@@ -6,8 +6,8 @@ from threading import Thread
 clients = {}
 addresses = {}
 
-HOST = ''
-PORT = 33000
+HOST = '127.0.0.1'
+PORT = 1234
 BUFSIZ = 1024
 ADDR = (HOST, PORT)
 SERVER = socket(AF_INET, SOCK_STREAM)
